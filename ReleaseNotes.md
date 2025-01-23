@@ -1,10 +1,42 @@
+# Version: 0.0.13dev6
+Date: 2024.12.26
+- Changes:
+  - Download Cover from MusicBrainz
+  - Fix selection of whisper model
+  - Added colab notebook
+  - Optimized whisper language check with confidence
+  - Improved arguments, so you dont need to use true or false
+  - Added interactive mode
+  - Use user defined ffmpeg path
+  - Show GPU Name and VRAM
+  - No linebreak before the last 'E' word for UltraStar txt files
+
+# Version: 0.0.12
+Date: 2024.12.19
+- Changes:
+  - Reduce Memory usage by clearing cache in whisper
+  - Add lyrics to midi file
+  - Split word by note changes
+  - Upgrade UltraStar Format to Version 1.2.0 (Use of VIDEOURL)
+  - Use yt with cookies
+  - Some docker container improvements
+  - Fix keep-cache option
+  - Fix numbers in lyrics and transcribtion
+  - Fix model path option
+  - Fix error in PDF sheet generation
+  - Fix hypen language download
+  - Fix install scripts
+  - Some bug fixes and improved error handling and logs
+
 # Version: 0.0.11
-Date: 2024.06.02
+Date: 2024.07.06
 - Changes:
   - Better linebreak calculation
   - Remove cache folder when finished
   - Remove audio from yt video
   - Added install and start scripts
+  - Added Docker support
+  - Added sheet music generation
 
 # Version: 0.0.10
 Date: 2024.05.01
