@@ -5,6 +5,7 @@ import getopt
 import os
 import sys
 import Levenshtein
+import librosa
 
 from packaging import version
 
@@ -16,9 +17,10 @@ from modules.Audio.vocal_chunks import (
     create_audio_chunks_from_transcribed_data,
     create_audio_chunks_from_ultrastar_data,
 )
+from modules.Audio.key_detector import detect_key_from_audio, get_allowed_notes_for_key
 from modules.Audio.silence_processing import remove_silence_from_transcription_data, mute_no_singing_parts
 from modules.Audio.separation import DemucsModel
-from modules.Audio.convert_audio import convert_audio_to_mono_wav, convert_wav_to_mp3
+from modules.Audio.convert_audio import convert_audio_to_mono_wav, convert_audio_format
 from modules.Audio.youtube import (
     download_from_youtube,
 )
@@ -41,7 +43,7 @@ from modules.Midi.midi_creator import (
 from modules.Midi.MidiSegment import MidiSegment
 from modules.Midi.note_length_calculator import get_thirtytwo_note_second, get_sixteenth_note_second
 from modules.Pitcher.pitcher import (
-    get_pitch_with_crepe_file,
+    get_pitch_with_file,
 )
 from modules.Pitcher.pitched_data import PitchedData
 from modules.Speech_Recognition.TranscriptionResult import TranscriptionResult
@@ -67,7 +69,12 @@ from modules.sheet import create_sheet
 from modules.ProcessData import ProcessData, ProcessDataPaths, MediaInfo
 from modules.DeviceDetection.device_detection import check_gpu_support
 from modules.Image.image_helper import save_image
-from modules.ffmpeg_helper import is_ffmpeg_available, get_ffmpeg_and_ffprobe_paths
+from modules.ffmpeg_helper import (
+    is_ffmpeg_available,
+    get_ffmpeg_and_ffprobe_paths,
+    is_video_file,
+    separate_audio_video,
+)
 
 from Settings import Settings
 
@@ -150,6 +157,8 @@ def run() -> tuple[str, Score, Score]:
         print(f"{ULTRASINGER_HEAD} {bright_green_highlighted('Option:')} {cyan_highlighted('Vocals will not be separated')}")
     if not settings.hyphenation:
         print(f"{ULTRASINGER_HEAD} {bright_green_highlighted('Option:')} {cyan_highlighted('Hyphenation will not be applied')}")
+    if settings.quantize_to_key:
+        print(f"{ULTRASINGER_HEAD} {bright_green_highlighted('Option:')} {cyan_highlighted('Notes will be quantized to the detected musical key')}")
 
     process_data = InitProcessData()
 
@@ -162,13 +171,23 @@ def run() -> tuple[str, Score, Score]:
     # Create process audio
     process_data.process_data_paths.processing_audio_path = CreateProcessAudio(process_data)
 
+    # Get BPM from wav file
+    if not settings.input_file_is_ultrastar_txt:
+        process_data.media_info.bpm = get_bpm_from_file(process_data.process_data_paths.processing_audio_path)
+
+    # Detect key
+    detected_key, detected_mode = detect_key_from_audio(process_data.process_data_paths.processing_audio_path)
+    if process_data.media_info.music_key is None:
+        process_data.media_info.music_key = f"{detected_key} {detected_mode}"
+
     # Audio transcription
     process_data.media_info.language = settings.language
     if not settings.ignore_audio:
         TranscribeAudio(process_data)
 
     # Split syllables into segments
-    process_data.transcribed_data = split_syllables_into_segments(process_data.transcribed_data,
+    if not settings.ignore_audio:
+        process_data.transcribed_data = split_syllables_into_segments(process_data.transcribed_data,
                                                                   process_data.media_info.bpm)
 
     # Create audio chunks
@@ -178,17 +197,25 @@ def run() -> tuple[str, Score, Score]:
     # Pitch audio
     process_data.pitched_data = pitch_audio(process_data.process_data_paths)
 
+    # Allowed keys for quantization
+    allowed_notes_for_key = None
+    if settings.quantize_to_key and not settings.ignore_audio:
+        allowed_notes_for_key = get_allowed_notes_for_key(detected_key, detected_mode)
+
     # Create Midi_Segments
     if not settings.ignore_audio:
-        process_data.midi_segments = create_midi_segments_from_transcribed_data(process_data.transcribed_data,
-                                                                                process_data.pitched_data)
+        process_data.midi_segments = create_midi_segments_from_transcribed_data(
+            process_data.transcribed_data,
+            process_data.pitched_data,
+            allowed_notes_for_key
+        )
     else:
         process_data.midi_segments = create_repitched_midi_segments_from_ultrastar_txt(process_data.pitched_data,
                                                                                        process_data.parsed_file)
 
     # Merge syllable segments
-    #tuple[list[MidiSegment], list[TranscribedData]]:
-    process_data.midi_segments, process_data.transcribed_data = merge_syllable_segments(process_data.midi_segments,
+    if not settings.ignore_audio:
+        process_data.midi_segments, process_data.transcribed_data = merge_syllable_segments(process_data.midi_segments,
                                                                                         process_data.transcribed_data,
                                                                                         process_data.media_info.bpm)
 
@@ -221,14 +248,21 @@ def run() -> tuple[str, Score, Score]:
 def split_syllables_into_segments(
         transcribed_data: list[TranscribedData],
         real_bpm: float) -> list[TranscribedData]:
-    """Split every syllable into sub-segments"""
+    """Split every syllable into sub-segments
+
+    This splits long syllables (including hyphenated ones) into smaller segments
+    to allow detect for pitch changes within a syllable (e.g., singing a scale).
+    """
     syllable_segment_size = get_sixteenth_note_second(real_bpm)
+    thirtytwo_note = get_thirtytwo_note_second(real_bpm)
 
     segment_size_decimal_points = len(str(syllable_segment_size).split(".")[1])
     new_data = []
 
     for i, data in enumerate(transcribed_data):
         duration = data.end - data.start
+
+        # If duration is less than or equal to a 16th note, don't split
         if duration <= syllable_segment_size:
             new_data.append(data)
             continue
@@ -259,7 +293,9 @@ def split_syllables_into_segments(
                 segment.is_word_end = False
                 new_data.append(segment)
 
-        if partial_segment >= 0.01:
+        # Only add a partial_segment if it's at least as long as a 32nd note
+        # Otherwise add it to the last note
+        if partial_segment >= thirtytwo_note:
             first_segment.is_hyphen = True
             segment = TranscribedData()
             segment.word = "~"
@@ -270,6 +306,9 @@ def split_syllables_into_segments(
             segment.is_hyphen = True
             segment.is_word_end = False
             new_data.append(segment)
+        elif full_segments >= 1 or len(new_data) > 0:
+            # Add remaining time to the last note
+            new_data[-1].end += partial_segment
 
         if has_space:
             new_data[-1].word += " "
@@ -280,10 +319,17 @@ def split_syllables_into_segments(
 def merge_syllable_segments(midi_segments: list[MidiSegment],
                             transcribed_data: list[TranscribedData],
                             real_bpm: float) -> tuple[list[MidiSegment], list[TranscribedData]]:
-    """Merge sub-segments of a syllable where the pitch is the same"""
+    """Merge sub-segments of a syllable where the pitch is the same
 
-    thirtytwo_note = get_thirtytwo_note_second(real_bpm)
+    This function handles three cases:
+    1. Merge consecutive ~ segments with the SAME pitch (same note held)
+    2. Detect and merge SLIDES: short ~ segments with ±1-2 semitone jumps between syllables
+    3. Merge ANY consecutive segments (including regular syllables) with the SAME pitch into one word
+    """
+
     sixteenth_note = get_sixteenth_note_second(real_bpm)
+    # Slides are typically very short (1-2 16th notes)
+    max_slide_duration = sixteenth_note * 2
 
     new_data = []
     new_midi_notes = []
@@ -291,26 +337,104 @@ def merge_syllable_segments(midi_segments: list[MidiSegment],
     previous_data = None
 
     for i, data in enumerate(transcribed_data):
-        is_note_short = data.end - data.start < thirtytwo_note
-        is_same_note = midi_segments[i].note == midi_segments[i - 1].note
+        # Check if previous element exists
+        is_same_note = i > 0 and midi_segments[i].note == midi_segments[i - 1].note
         has_breath_pause = False
 
         if previous_data is not None:
-            has_breath_pause = data.start - previous_data.end > sixteenth_note
+            has_breath_pause = (data.start - previous_data.end) > sixteenth_note
 
-        if (str(data.word).startswith("~")
-                and previous_data is not None
-                and (is_note_short or is_same_note)
-                and not has_breath_pause):
+        # Check if current word is a ~ segment (continuation marker)
+        current_word_stripped = str(data.word).strip()
+        is_tilde_segment = current_word_stripped == "~"
+
+        # Slide detection: Detect short ~ segments with small pitch jumps
+        is_potential_slide = False
+        if i > 0 and is_tilde_segment:
+            duration = data.end - data.start
+
+            # Calculate pitch jump in semitones
+            try:
+                prev_midi = librosa.note_to_midi(midi_segments[i - 1].note)
+                curr_midi = librosa.note_to_midi(midi_segments[i].note)
+                semitone_diff = abs(curr_midi - prev_midi)
+
+                # Slide: Short duration AND small pitch jump (1-2 semitones)
+                is_potential_slide = (duration <= max_slide_duration and
+                                     semitone_diff <= 2 and
+                                     semitone_diff > 0)
+            except:
+                # Ignore slide detection on error
+                pass
+
+        # Check if current segment should be merged with previous due to same pitch
+        should_merge_same_pitch = False
+        if (i > 0 and
+            previous_data is not None and
+            not is_tilde_segment and  # Not a ~ segment
+            is_same_note and
+            not has_breath_pause and
+            not previous_data.is_word_end):  # Don't merge across word boundaries
+            should_merge_same_pitch = True
+
+        should_merge_tilde = (is_tilde_segment and
+                             previous_data is not None and
+                             (is_same_note or is_potential_slide) and
+                             not has_breath_pause)
+
+        if should_merge_tilde:
             new_data[-1].end = data.end
             new_midi_notes[-1].end = data.end
 
+            # For slides: Keep the original note (not the transition note)
+            if is_potential_slide and not is_same_note:
+                new_midi_notes[-1].note = midi_segments[i - 1].note
+
+            # Take over space and word_end flag from current segment
+            # "~ " means end of word - add space to previous segment
             if str(data.word).endswith(" "):
-                new_data[-1].word += " "
-                new_midi_notes[-1].word += " "
+                if not new_data[-1].word.endswith(" "):
+                    new_data[-1].word += " "
+                if not new_midi_notes[-1].word.endswith(" "):
+                    new_midi_notes[-1].word += " "
                 new_data[-1].is_word_end = True
 
+        elif should_merge_same_pitch:
+            # Merge regular syllable with previous syllable (same pitch)
+            new_data[-1].end = data.end
+            new_midi_notes[-1].end = data.end
+
+            # Check if current word has space at end before stripping
+            has_space = str(data.word).endswith(" ")
+
+            # Concatenate the words (remove trailing space from previous, add current word)
+            prev_word = new_data[-1].word.rstrip()
+            curr_word = data.word.rstrip()
+
+            # Remove ~ from BOTH previous and current word if present
+            if prev_word == "~":
+                prev_word = ""
+            if curr_word.startswith("~"):
+                curr_word = curr_word[1:]
+
+            # Concatenate
+            new_data[-1].word = prev_word + curr_word
+            new_midi_notes[-1].word = prev_word + curr_word
+
+            # Preserve space at end if current segment had it
+            if has_space:
+                new_data[-1].word += " "
+                new_midi_notes[-1].word += " "
+
+            if data.is_word_end:
+                new_data[-1].is_word_end = True
+                new_data[-1].is_hyphen = False
+            else:
+                # Keep hyphen status if either segment was hyphenated
+                new_data[-1].is_hyphen = new_data[-1].is_hyphen or data.is_hyphen
+
         else:
+            # Add as new segment
             new_data.append(data)
             new_midi_notes.append(midi_segments[i])
 
@@ -340,10 +464,12 @@ def InitProcessData():
             settings.output_folder_path,
             audio_file_path,
             ultrastar_class,
+            audio_extension,
         ) = parse_ultrastar_txt(settings.input_file_path, settings.output_folder_path)
         process_data = from_ultrastar_txt(ultrastar_class)
         process_data.basename = basename
         process_data.process_data_paths.audio_output_file_path = audio_file_path
+        process_data.media_info.audio_extension = audio_extension
         # todo: ignore transcribe
         settings.ignore_audio = True
 
@@ -358,7 +484,7 @@ def InitProcessData():
             process_data.media_info
         ) = download_from_youtube(settings.input_file_path, settings.output_folder_path, settings.cookiefile)
     else:
-        # Audio File
+        # Audio/Video File
         print(f"{ULTRASINGER_HEAD} {gold_highlighted('Full Automatic Mode')}")
         process_data = ProcessData()
         (
@@ -366,7 +492,7 @@ def InitProcessData():
             settings.output_folder_path,
             process_data.process_data_paths.audio_output_file_path,
             process_data.media_info,
-        ) = infos_from_audio_input_file()
+        ) = infos_from_audio_video_input_file()
     return process_data
 
 
@@ -397,15 +523,15 @@ def CreateUltraStarTxt(process_data: ProcessData):
     # Move instrumental and vocals
     if settings.create_karaoke and version.parse(settings.format_version.value) < version.parse(
             FormatVersion.V1_1_0.value):
-        karaoke_output_path = os.path.join(settings.output_folder_path, process_data.basename + " [Karaoke].mp3")
-        convert_wav_to_mp3(process_data.process_data_paths.instrumental_audio_file_path, karaoke_output_path)
+        karaoke_output_path = os.path.join(settings.output_folder_path, process_data.basename + " [Karaoke]." + process_data.media_info.audio_extension)
+        convert_audio_format(process_data.process_data_paths.instrumental_audio_file_path, karaoke_output_path)
 
     if version.parse(settings.format_version.value) >= version.parse(FormatVersion.V1_1_0.value):
         instrumental_output_path = os.path.join(settings.output_folder_path,
-                                                process_data.basename + " [Instrumental].mp3")
-        convert_wav_to_mp3(process_data.process_data_paths.instrumental_audio_file_path, instrumental_output_path)
-        vocals_output_path = os.path.join(settings.output_folder_path, process_data.basename + " [Vocals].mp3")
-        convert_wav_to_mp3(process_data.process_data_paths.vocals_audio_file_path, vocals_output_path)
+                                                process_data.basename + " [Instrumental]." + process_data.media_info.audio_extension)
+        convert_audio_format(process_data.process_data_paths.instrumental_audio_file_path, instrumental_output_path)
+        vocals_output_path = os.path.join(settings.output_folder_path, process_data.basename + " [Vocals]." + process_data.media_info.audio_extension)
+        convert_audio_format(process_data.process_data_paths.vocals_audio_file_path, vocals_output_path)
 
     # Create Ultrastar txt
     if not settings.ignore_audio:
@@ -489,15 +615,17 @@ def transcribe_audio(cache_folder_path: str, processing_audio_path: str) -> Tran
     transcription_result = None
     whisper_align_model_string = None
     if settings.transcriber == "whisper":
-        if not settings.whisper_align_model is None: whisper_align_model_string = settings.whisper_align_model.replace("/", "_")
-        transcription_config = f"{settings.transcriber}_{settings.whisper_model.value}_{settings.pytorch_device}_{whisper_align_model_string}_{settings.whisper_batch_size}_{settings.whisper_compute_type}_{settings.language}"
+        if not settings.whisper_align_model is None:
+            whisper_align_model_string = settings.whisper_align_model.replace("/", "_")
+        whisper_device = "cpu" if settings.force_whisper_cpu else settings.pytorch_device
+        transcription_config = f"{settings.transcriber}_{settings.whisper_model.value}_{whisper_device}_{whisper_align_model_string}_{settings.whisper_batch_size}_{settings.whisper_compute_type}_{settings.language}"
         transcription_path = os.path.join(cache_folder_path, f"{transcription_config}.json")
         cached_transcription_available = check_file_exists(transcription_path)
         if settings.skip_cache_transcription or not cached_transcription_available:
             transcription_result = transcribe_with_whisper(
                 processing_audio_path,
                 settings.whisper_model,
-                settings.pytorch_device,
+                whisper_device,
                 settings.whisper_align_model,
                 settings.whisper_batch_size,
                 settings.whisper_compute_type,
@@ -516,8 +644,8 @@ def transcribe_audio(cache_folder_path: str, processing_audio_path: str) -> Tran
     return transcription_result
 
 
-def infos_from_audio_input_file() -> tuple[str, str, str, MediaInfo]:
-    """Infos from audio input file"""
+def infos_from_audio_video_input_file() -> tuple[str, str, str, MediaInfo]:
+    """Infos from audio/video input file"""
     basename = os.path.basename(settings.input_file_path)
     basename_without_ext = os.path.splitext(basename)[0]
 
@@ -529,27 +657,52 @@ def infos_from_audio_input_file() -> tuple[str, str, str, MediaInfo]:
 
     song_info = search_musicbrainz(title, artist)
     basename_without_ext = f"{song_info.artist} - {song_info.title}"
-    extension = os.path.splitext(basename)[1]
-    basename = f"{basename_without_ext}{extension}"
 
     song_folder_output_path = os.path.join(settings.output_folder_path, basename_without_ext)
     song_folder_output_path = get_unused_song_output_dir(song_folder_output_path)
     os_helper.create_folder(song_folder_output_path)
-    os_helper.copy(settings.input_file_path, song_folder_output_path)
-    os_helper.rename(
-        os.path.join(song_folder_output_path, os.path.basename(settings.input_file_path)),
-        os.path.join(song_folder_output_path, basename),
-    )
+
+    extension = os.path.splitext(basename)[1]
+    if is_video_file(settings.input_file_path):
+        print(f"{ULTRASINGER_HEAD} Video file detected - separating audio and video")
+
+        video_with_audio_basename = f"{basename_without_ext}{extension}"
+        video_with_audio_path = os.path.join(song_folder_output_path, video_with_audio_basename)
+        os_helper.copy(settings.input_file_path, video_with_audio_path)
+
+        # Separate audio and video
+        ultrastar_audio_input_path, final_video_path, audio_ext, video_ext = separate_audio_video(
+            video_with_audio_path, basename_without_ext, song_folder_output_path
+        )
+    else:
+        # Audio file
+        basename_with_ext = f"{basename_without_ext}{extension}"
+        audio_ext = extension.lstrip('.')
+        video_ext = None
+        os_helper.copy(settings.input_file_path, song_folder_output_path)
+        os_helper.rename(
+            os.path.join(song_folder_output_path, os.path.basename(settings.input_file_path)),
+            os.path.join(song_folder_output_path, basename_with_ext),
+        )
+        ultrastar_audio_input_path = os.path.join(song_folder_output_path, basename_with_ext)
+
     # Todo: Read ID3 tags
     if song_info.cover_image_data is not None:
         save_image(song_info.cover_image_data, basename_without_ext, song_folder_output_path)
-    ultrastar_audio_input_path = os.path.join(song_folder_output_path, basename)
-    real_bpm = get_bpm_from_file(settings.input_file_path)
+
     return (
         basename_without_ext,
         song_folder_output_path,
         ultrastar_audio_input_path,
-        MediaInfo(artist=song_info.artist, title=song_info.title, year=song_info.year, genre=song_info.genres, bpm=real_bpm, cover_url=song_info.cover_url),
+        MediaInfo(
+            artist=song_info.artist,
+            title=song_info.title,
+            year=song_info.year,
+            genre=song_info.genres,
+            cover_url=song_info.cover_url,
+            audio_extension=audio_ext,
+            video_extension=video_ext
+        ),
     )
 
 
@@ -557,16 +710,13 @@ def pitch_audio(
         process_data_paths: ProcessDataPaths) -> PitchedData:
     """Pitch audio"""
 
-    pitching_config = f"crepe_{settings.ignore_audio}_{settings.crepe_model_capacity}_{settings.crepe_step_size}_{settings.tensorflow_device}"
+    pitching_config = f"swiftf0_{settings.ignore_audio}"
     pitched_data_path = os.path.join(process_data_paths.cache_folder_path, f"{pitching_config}.json")
     cache_available = check_file_exists(pitched_data_path)
 
-    if settings.skip_cache_transcription or not cache_available:
-        pitched_data = get_pitch_with_crepe_file(
-            process_data_paths.processing_audio_path,
-            settings.crepe_model_capacity,
-            settings.crepe_step_size,
-            settings.tensorflow_device,
+    if settings.skip_cache_pitch_detection or not cache_available:
+        pitched_data = get_pitch_with_file(
+            process_data_paths.processing_audio_path
         )
 
         pitched_data_json = pitched_data.to_json()
@@ -594,7 +744,7 @@ def main(argv: list[str]) -> None:
 
 def check_requirements() -> None:
     if not settings.force_cpu:
-        settings.tensorflow_device, settings.pytorch_device = check_gpu_support()
+        settings.pytorch_device = check_gpu_support()
     print(f"{ULTRASINGER_HEAD} ----------------------")
 
     if not is_ffmpeg_available(settings.user_ffmpeg_path):
@@ -701,6 +851,8 @@ def init_settings(argv: list[str]) -> Settings:
             settings.cookiefile = arg
         elif opt in ("--interactive"):
             settings.interactive_mode = True
+        elif opt in ("--quantize_to_key"):
+            settings.quantize_to_key = arg
         elif opt in ("--ffmpeg"):
             settings.user_ffmpeg_path = arg
     if settings.output_folder_path == "":
@@ -741,6 +893,7 @@ def arg_options():
         "keep_cache",
         "musescore_path=",
         "keep_numbers",
+        "quantize_to_key",
         "interactive",
         "cookiefile=",
         "ffmpeg="

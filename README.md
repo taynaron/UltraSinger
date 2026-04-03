@@ -17,7 +17,7 @@
 
 > ⚠️ _This project is still under development!_
 
-UltraSinger is a tool to automatically create UltraStar.txt, midi and notes from music. 
+UltraSinger is a tool to automatically create UltraStar.txt, midi and notes from music.
 It automatically pitches UltraStar files, adding text and tapping to UltraStar files and creates separate UltraStar karaoke files.
 It also can re-pitch current UltraStar files and calculates the possible in-game score.
 
@@ -69,39 +69,39 @@ This will help me a lot to keep this project alive and improve it.
 
 ### Installation
 
-* Install Python 3.10 **(older and newer versions has some breaking changes)**. [Download](https://www.python.org/downloads/)
+* Install Python 3.12 **(older/newer versions may have compatibility issues)**. [Download](https://www.python.org/downloads/)
 * Also download or install ffmpeg with PATH. [Download](https://www.ffmpeg.org/download.html)
-* Go to folder `install` and run install script for your OS.
-  * Choose `GPU` if you have an nvidia CUDA GPU.
-  * Choose `CPU` if you don't have an nvidia CUDA GPU.
+* Go to folder `install` and run install script for your OS:
+  * Choose `GPU` if you have an NVIDIA CUDA GPU.
+  * Choose `CPU` if you don't have an NVIDIA GPU or want CPU-only processing.
 
 ### Run
 
-* In root folder just run `run_on_windows.bat` or `run_on_linux.sh` to start the app.
-* Now you can use the UltraSinger source code with `py UltraSinger.py [opt] [mode] [transcription] [pitcher] [extra]`. See [How to use](#how-to-use) for more information.
+* In root folder just run `run_on_windows.bat`, `run_on_linux.sh` or `run_on_mac.command` to start the app.
+* Now you can use the UltraSinger source code with `py UltraSinger.py [opt] [mode] [transcription] [pitcher] [extra]`. See [How to use](#-how-to-use-the-app) for more information.
 
 ## 📖 How to use the App
 
 _Not all options working now!_
 ```commandline
     UltraSinger.py [opt] [mode] [transcription] [pitcher] [extra]
-    
+
     [opt]
     -h      This help text.
     -i      Ultrastar.txt
-            audio like .mp3, .wav, youtube link
+            audio/video like .mp3, .mp4, .wav, youtube link
     -o      Output folder
-    
+
     [mode]
     ## if INPUT is audio ##
     default (Full Automatic Mode) - Creates all, depending on command line options
     --interactive - Interactive Mode. All options are asked at runtime for easier configuration
-    
+
     # Single file creation selection is in progress, you currently getting all!
     (-u      Create ultrastar txt file) # In Progress
     (-m      Create midi file) # In Progress
     (-s      Create sheet file) # In Progress
-    
+
     ## if INPUT is ultrastar.txt ##
     default  Creates all
 
@@ -117,13 +117,8 @@ _Not all options working now!_
     --language              Override the language detected by whisper, does not affect transcription but steps after transcription
     --whisper_batch_size    Reduce if low on GPU mem >> ((default) is 16)
     --whisper_compute_type  Change to "int8" if low on GPU mem (may reduce accuracy) >> ((default) is "float16" for cuda devices, "int8" for cpu)
-    --keep_numbers          Numbers will be transcribed as numerics instead of as words 
-    
-    [pitcher]
-    # Default is crepe
-    --crepe            tiny|full >> ((default) is full)
-    --crepe_step_size  unit is miliseconds >> ((default) is 10)
-    
+    --keep_numbers          Numbers will be transcribed as numerics instead of as words
+
     [extra]
     --disable_hyphenation   Disable word hyphenation. Hyphenation is enabled by default.
     --disable_separation    Disable track separation. Track separation is enabled by default.
@@ -131,18 +126,18 @@ _Not all options working now!_
     --create_audio_chunks   Enable creation of audio chunks. Audio chunks are disabled by default.
     --keep_cache            Keep cache folder after creation. Cache folder is removed by default.
     --plot                  Enable creation of plots. Plots are disabled by default.
+    --quantize_to_key       Quantize notes to detected musical key. Removes pitch slides and out-of-key notes. >> ((default) is enabled)
     --format_version        0.3.0|1.0.0|1.1.0|1.2.0 >> ((default) is 1.2.0)
     --musescore_path        path to MuseScore executable
     --keep_numbers          Transcribe numbers as digits and not words
     --ffmpeg                Path to ffmpeg and ffprobe executable
-    
+
     [yt-dlp]
     --cookiefile            File name where cookies should be read from
 
     [device]
     --force_cpu             Force all steps to be processed on CPU.
     --force_whisper_cpu     Only whisper will be forced to cpu
-    --force_crepe_cpu       Only crepe will be forced to cpu
 ```
 
 For standard use, you only need to use [opt]. All other options are optional.
@@ -155,7 +150,7 @@ default (Full Automatic Mode) - Creates all, depending on command line options
 ```commandline
 --interactive
 ```
-#### Audio (full automatic)
+#### Audio / Video (full automatic)
 
 ##### Local file
 
@@ -196,8 +191,8 @@ For the first test run, use the `tiny`, to be accurate use the `large-v2` model.
 
 ##### Whisper languages
 
-Currently provided default language models are `en, fr, de, es, it, ja, zh, nl, uk, pt`. 
-If the language is not in this list, you need to find a phoneme-based ASR model from 
+Currently provided default language models are `en, fr, de, es, it, ja, zh, nl, uk, pt`.
+If the language is not in this list, you need to find a phoneme-based ASR model from
 [🤗 huggingface model hub](https://huggingface.co). It will download automatically.
 
 Example for romanian:
@@ -207,9 +202,9 @@ Example for romanian:
 
 #### ✍️ Hyphenation
 
-Is on by default. Can also be deactivated if hyphenation does not produce 
-anything useful. Note that the word is simply split, 
-without paying attention to whether the separated word really 
+Is on by default. Can also be deactivated if hyphenation does not produce
+anything useful. Note that the word is simply split,
+without paying attention to whether the separated word really
 starts at the place or is heard. To disable:
 
 ```commandline
@@ -218,23 +213,27 @@ starts at the place or is heard. To disable:
 
 ### 👂 Pitcher
 
-Pitching is done with the `crepe` model.
-Also consider that a bigger model is more accurate, but also takes longer to pitch.
-For just testing you should use `tiny`.
-If you want solid accurate, then use the `full` model.
-
-```commandline
--i XYZ --crepe full
-```
+Pitching is done with the `SwiftF0` model, which is faster and more accurate than CREPE.
+SwiftF0 automatically detects pitch frequencies between 46.875 Hz (G1) and 2093.75 Hz (C7).
+UltraSinger uses 60hz and 400hz
 
 ### 👄 Separation
 
-The vocals are separated from the audio before they are passed to the models. If problems occur with this, 
+The vocals are separated from the audio before they are passed to the models. If problems occur with this,
 you have the option to disable this function; in which case the original audio file is used instead.
 
 ```commandline
--i XYZ --disable_separation 
+-i XYZ --disable_separation
 ```
+
+### 🎵 Key Quantization
+
+By default, UltraSinger quantizes all detected notes to the detected musical key of the song. This helps to:
+* Remove pitch slides and vocal transitions between notes
+* Correct out-of-key notes from pitch detection errors
+
+If you want to keep the raw pitch detection without quantization, set `quantize_to_key = False`.
+For most songs  quantization should produces better results.
 
 ### Sheet Music
 
@@ -262,11 +261,11 @@ You can choose between different format versions. The default is `1.2.0`.
 
 ### 🏆 Ultrastar Score Calculation
 
-The score that the singer in the audio would receive will be measured. 
-You get 2 scores, simple and accurate. You wonder where the difference is? 
-Ultrastar is not interested in pitch hights. As long as it is in the pitch range A-G you get one point. 
-This makes sense for the game, because otherwise men don't get points for high female voices and women don't get points 
-for low male voices. Accurate is the real tone specified in the txt. I had txt files where the pitch was in a range not 
+The score that the singer in the audio would receive will be measured.
+You get 2 scores, simple and accurate. You wonder where the difference is?
+Ultrastar is not interested in pitch hights. As long as it is in the pitch range A-G you get one point.
+This makes sense for the game, because otherwise men don't get points for high female voices and women don't get points
+for low male voices. Accurate is the real tone specified in the txt. I had txt files where the pitch was in a range not
 singable by humans, but you could still reach the 10k points in the game. The accuracy is important here, because from
 this MIDI and sheet are created. And you also want to have accurate files
 
@@ -275,34 +274,24 @@ this MIDI and sheet are created. And you also want to have accurate files
 
 With a GPU you can speed up the process. Also the quality of the transcription and pitching is better.
 
-You need a cuda device for this to work. Sorry, there is no cuda device for macOS.
+You need an NVIDIA CUDA device for this to work. Sorry, there is no CUDA device for macOS.
 
-It is optional (but recommended) to install the cuda driver for your gpu: see [driver](https://developer.nvidia.com/cuda-downloads).
-Install torch with cuda separately in your `venv`. See [tourch+cuda](https://pytorch.org/get-started/locally/).
-Also check you GPU cuda support. See [cuda support](https://gist.github.com/standaloneSA/99788f30466516dbcc00338b36ad5acf)
+For GPU support on Windows and Linux, the installation script automatically installs PyTorch with CUDA support.
 
-Command for `pip`:
+It is optional (but recommended) to install the CUDA driver for your GPU: see [CUDA driver](https://developer.nvidia.com/cuda-downloads).
+Also check your GPU CUDA support. See [CUDA support](https://gist.github.com/standaloneSA/99788f30466516dbcc00338b36ad5acf)
+
+For manual installation, you can use:
+```bash
+uv pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
 ```
-pip3 install torch==2.0.1+cu117 torchvision==0.15.2+cu117 torchaudio==2.0.2+cu117 --index-url https://download.pytorch.org/whl/cu117
-```
-
-When you want to use `conda` instead you need a [different installation command](https://pytorch.org/get-started/locally/).
-
-#### Considerations for Windows users
-
-The pitch tracker used by UltraSinger (crepe) uses TensorFlow as its backend.
-TensorFlow dropped GPU support for Windows for versions >2.10 as you can see in this [release note](https://github.com/tensorflow/tensorflow/releases/tag/v2.11.1) and their [installation instructions](https://www.tensorflow.org/install/pip#windows-native).
-
-For now UltraSinger runs the latest version available that still supports GPUs on windows.
-
-For running later versions of TensorFlow on windows while still taking advantage of GPU support the suggested solution is to [run UltraSinger in a container](container/README.md).
 
 #### Crashes due to low VRAM
 
-If something crashes because of low VRAM then use a smaller model.
+If something crashes because of low VRAM then use a smaller Whisper model.
 Whisper needs more than 8GB VRAM in the `large` model!
 
-You can also force cpu usage with the extra option `--force_cpu`.
+You can also force CPU usage with the extra option `--force_cpu`.
 
 ### 📦 Containerized (Docker or Podman)
 

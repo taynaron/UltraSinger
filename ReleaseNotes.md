@@ -1,5 +1,5 @@
-# Version: 0.0.13dev6
-Date: 2024.12.26
+# Version: 0.0.13dev16
+Date: 2026.03.04
 - Changes:
   - Download Cover from MusicBrainz
   - Fix selection of whisper model
@@ -10,6 +10,13 @@ Date: 2024.12.26
   - Use user defined ffmpeg path
   - Show GPU Name and VRAM
   - No linebreak before the last 'E' word for UltraStar txt files
+  - Download yt video/audio only once
+  - Support for video as input
+  - Optimise scale detection
+  - Added quantization by key
+  - Changed installer to uv
+  - Drop crepe for SwiftF0
+  - upgrade to python 3.12
 
 # Version: 0.0.12
 Date: 2024.12.19

@@ -26,7 +26,7 @@ echo "uv version:"
 uv --version
 
 echo "Syncing dependencies with uv..."
-uv sync --extra linux
+uv sync --extra macos
 
 echo "Installation completed successfully!"
 echo "To run UltraSinger:"
